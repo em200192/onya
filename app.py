@@ -1288,6 +1288,67 @@ def _inject_css():
         }}
     </style>
     """, unsafe_allow_html=True)
+# --- WebRTC-based JARVIS (works on Streamlit Cloud) ---
+def _downsample_48k_to_16k_int16(x: np.ndarray) -> np.ndarray:
+    return x[::3].astype(np.int16)
+
+class PorcupineProcessor(AudioProcessorBase):
+    def __init__(self):
+        self.ready = False
+        self.porcupine = None
+        self.frame_len = None
+        self.buffer = np.array([], dtype=np.int16)
+
+        try:
+            if not PICOVOICE_API_KEY:
+                self.err = "PICOVOICE_API_KEY missing"
+                return
+            import pvporcupine
+            self.porcupine = pvporcupine.create(access_key=PICOVOICE_API_KEY, keywords=["jarvis"])
+            self.frame_len = self.porcupine.frame_length
+            self.ready = True
+            self.err = None
+        except Exception as e:
+            self.err = f"Porcupine init failed: {e}"
+
+    def recv_audio(self, frames):
+        if not self.ready:
+            return frames
+
+        try:
+            pcm_all = np.zeros(0, dtype=np.int16)
+            for f in frames:
+                ch = f.to_ndarray(format="s16").astype(np.int16)
+                if ch.ndim == 2 and ch.shape[0] > 1:  # stereo → mono
+                    ch = ch.mean(axis=0).astype(np.int16)
+                pcm_all = np.concatenate([pcm_all, ch])
+
+            pcm_16k = _downsample_48k_to_16k_int16(pcm_all)
+
+            self.buffer = np.concatenate([self.buffer, pcm_16k])
+            while len(self.buffer) >= self.frame_len:
+                frame = self.buffer[:self.frame_len]
+                self.buffer = self.buffer[self.frame_len:]
+                res = self.porcupine.process(frame.tolist())
+                if res >= 0:
+                    st.session_state["jarvis_triggered_web"] = True
+                    break
+        except Exception as e:
+            st.session_state["jarvis_webrtc_error"] = str(e)
+
+        return frames
+
+def start_web_jarvis():
+    st.info("🎧 Web JARVIS is listening in your browser (say 'Jarvis').")
+    ctx = webrtc_streamer(
+        key="jarvis-webrtc",
+        mode=WebRtcMode.RECVONLY,
+        audio_receiver_size=1024,
+        media_stream_constraints={"audio": True, "video": False},
+        async_processing=True,
+        audio_processor_factory=PorcupineProcessor,
+    )
+    return ctx
 
 
 apply_language(ss["lang"])
@@ -1308,6 +1369,19 @@ with st.sidebar:
 
     st.subheader("🌐 Language & Voice")
 
+    st.subheader("JARVIS (Web)")
+    if st.button("Start JARVIS (Web)"):
+        st.session_state["jarvis_web_active"] = True
+        st.session_state["jarvis_triggered_web"] = False
+        st.rerun()
+
+    if st.session_state.get("jarvis_web_active"):
+        start_web_jarvis()
+        if st.session_state.get("jarvis_webrtc_error"):
+            st.error(f"WebRTC error: {st.session_state['jarvis_webrtc_error']}")
+        if st.session_state.get("jarvis_triggered_web"):
+            st.success("✔️ Wake word detected (Web)!")
+            # TODO: after detection, trigger mic_recorder or your command capture flow
     mic_options = ['Push to talk', 'JARVIS Mode']
     ss["mic_mode"] = st.selectbox(
         "Microphone Mode / وضع الميكروفون",
