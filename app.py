@@ -12,7 +12,8 @@ import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 from elevenlabs import VoiceSettings
-
+import numpy as np
+from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
 from streamlit_mic_recorder import mic_recorder
 import io, tempfile
 
